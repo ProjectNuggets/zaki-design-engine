@@ -6,10 +6,18 @@ import path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  closeDatabase,
+  getZakiProjectRole,
+  insertProject,
+  openDatabase,
+  upsertZakiProjectRole,
+} from '../src/db.js';
+import {
   calculateZakiTenantStorageUsage,
   createZakiHostedAuthMiddleware,
   createZakiHostedProjectMiddleware,
   filterProjectsForZakiTenant,
+  projectAccessibleToZakiTenant,
 } from '../src/zaki-hosted.js';
 
 type Project = {
@@ -235,6 +243,39 @@ describe('zaki hosted mode', () => {
         projects: [{ id: 'design-a', bytes: 17 }],
       });
     } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('seeds owner roles and allows explicit project role access', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'zaki-design-roles-'));
+    try {
+      const db = openDatabase(process.cwd(), { dataDir: root });
+      const project = insertProject(db, {
+        id: 'design-role-a',
+        name: 'Role fixture',
+        metadata: { zakiTenantId: 'user-a' },
+        createdAt: 123,
+        updatedAt: 123,
+      });
+
+      expect(getZakiProjectRole(db, 'design-role-a', 'user-a')).toMatchObject({
+        projectId: 'design-role-a',
+        userId: 'user-a',
+        role: 'owner',
+      });
+
+      const viewerRole = upsertZakiProjectRole(db, {
+        projectId: 'design-role-a',
+        userId: 'user-b',
+        role: 'viewer',
+        now: 456,
+      });
+      expect(viewerRole).toMatchObject({ userId: 'user-b', role: 'viewer' });
+      expect(projectAccessibleToZakiTenant(project, 'user-b', viewerRole)).toBe(true);
+      expect(projectAccessibleToZakiTenant(project, 'user-c', null)).toBe(false);
+    } finally {
+      closeDatabase();
       await fs.rm(root, { recursive: true, force: true });
     }
   });

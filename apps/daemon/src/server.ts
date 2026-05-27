@@ -335,6 +335,7 @@ import {
   getDeployment,
   getDeploymentById,
   getProject,
+  getZakiProjectRole,
   getTemplate,
   insertConversation,
   insertProject,
@@ -4869,6 +4870,7 @@ export async function startServer({
     env: process.env,
     getProject: (id) => getProject(db, id),
     getRun: (id) => design.runs.get(id),
+    getProjectRole: (projectId, userId) => getZakiProjectRole(db, projectId, userId),
   }));
 
   app.get('/api/zaki/storage-usage', async (req, res) => {

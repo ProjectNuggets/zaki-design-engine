@@ -4,6 +4,8 @@ import path from 'node:path';
 
 export const ZAKI_TENANT_METADATA_KEY = 'zakiTenantId';
 
+const ZAKI_PROJECT_ROLE_ACCESS = new Set(['owner', 'editor', 'viewer']);
+
 type Env = NodeJS.ProcessEnv | Record<string, string | undefined>;
 type ProjectRecord = {
   id?: string;
@@ -17,6 +19,10 @@ type RunRecord = {
 type StorageProjectRecord = {
   id?: string;
   metadata?: Record<string, unknown> | null;
+} | null | undefined;
+
+type ProjectRoleRecord = {
+  role?: string | null;
 } | null | undefined;
 
 type ZakiRequest = Request & {
@@ -106,6 +112,17 @@ export function projectBelongsToZakiTenant(project: ProjectRecord, tenantId: str
   if (!tenantId) return false;
   const owner = normalizeZakiTenantId(project?.metadata?.[ZAKI_TENANT_METADATA_KEY]);
   return owner === tenantId;
+}
+
+export function projectAccessibleToZakiTenant(
+  project: ProjectRecord,
+  tenantId: string | null,
+  role?: ProjectRoleRecord,
+): boolean {
+  if (!tenantId) return false;
+  if (projectBelongsToZakiTenant(project, tenantId)) return true;
+  const normalizedRole = typeof role?.role === 'string' ? role.role.trim().toLowerCase() : '';
+  return ZAKI_PROJECT_ROLE_ACCESS.has(normalizedRole);
 }
 
 export function filterProjectsForZakiTenant<T extends ProjectRecord>(req: Request, projects: T[]): T[] {
@@ -285,6 +302,7 @@ export function createZakiHostedAuthMiddleware(opts: { env?: Env } = {}) {
 export function createZakiHostedProjectMiddleware(opts: {
   env?: Env;
   getProject: (id: string) => ProjectRecord;
+  getProjectRole?: (projectId: string, userId: string) => ProjectRoleRecord;
   getRun?: (id: string) => RunRecord;
 }) {
   const env = opts.env ?? process.env;
@@ -304,7 +322,14 @@ export function createZakiHostedProjectMiddleware(opts: {
     if (runMatch && opts.getRun) {
       const runId = runMatch[1] ? decodeURIComponent(runMatch[1]) : '';
       const run = opts.getRun(runId);
-      if (run?.projectId && !projectBelongsToZakiTenant(opts.getProject(run.projectId), tenantId)) {
+      if (
+        run?.projectId &&
+        !projectAccessibleToZakiTenant(
+          opts.getProject(run.projectId),
+          tenantId,
+          opts.getProjectRole?.(run.projectId, tenantId),
+        )
+      ) {
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'not found' } });
       }
     }
@@ -317,7 +342,10 @@ export function createZakiHostedProjectMiddleware(opts: {
 
     for (const projectId of collectRequestProjectIds(req)) {
       const project = opts.getProject(projectId);
-      if (project && !projectBelongsToZakiTenant(project, tenantId)) {
+      if (
+        project &&
+        !projectAccessibleToZakiTenant(project, tenantId, opts.getProjectRole?.(projectId, tenantId))
+      ) {
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'not found' } });
       }
     }

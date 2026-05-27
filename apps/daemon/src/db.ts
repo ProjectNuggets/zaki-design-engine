@@ -62,6 +62,19 @@ function migrate(db: SqliteDb): void {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS zaki_project_roles (
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('owner', 'editor', 'viewer')),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(project_id, user_id),
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_zaki_project_roles_user
+      ON zaki_project_roles(user_id, role, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS templates (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -441,6 +454,84 @@ function stringifyJsonObjectOrNull(value: unknown) {
   return Object.keys(value).length > 0 ? JSON.stringify(value) : null;
 }
 
+export type ZakiProjectRole = 'owner' | 'editor' | 'viewer';
+
+const ZAKI_PROJECT_ROLES = new Set<ZakiProjectRole>(['owner', 'editor', 'viewer']);
+
+function normalizeZakiProjectUserId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9._:@-]{1,160}$/.test(trimmed) ? trimmed : null;
+}
+
+function normalizeZakiProjectRole(value: unknown): ZakiProjectRole | null {
+  const role = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return ZAKI_PROJECT_ROLES.has(role as ZakiProjectRole) ? role as ZakiProjectRole : null;
+}
+
+export function upsertZakiProjectRole(
+  db: SqliteDb,
+  {
+    projectId,
+    userId,
+    role = 'viewer',
+    now = Date.now(),
+  }: { projectId: string; userId: string; role?: ZakiProjectRole | string; now?: number },
+) {
+  const normalizedUserId = normalizeZakiProjectUserId(userId);
+  const normalizedRole = normalizeZakiProjectRole(role);
+  if (!projectId || !normalizedUserId || !normalizedRole) return null;
+  db.prepare(
+    `INSERT INTO zaki_project_roles (project_id, user_id, role, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(project_id, user_id)
+     DO UPDATE SET role = excluded.role, updated_at = excluded.updated_at`,
+  ).run(projectId, normalizedUserId, normalizedRole, now, now);
+  return getZakiProjectRole(db, projectId, normalizedUserId);
+}
+
+export function getZakiProjectRole(db: SqliteDb, projectId: string, userId: string) {
+  const normalizedUserId = normalizeZakiProjectUserId(userId);
+  if (!projectId || !normalizedUserId) return null;
+  const roleRow = db.prepare(
+    `SELECT project_id AS projectId,
+            user_id AS userId,
+            role,
+            created_at AS createdAt,
+            updated_at AS updatedAt
+       FROM zaki_project_roles
+      WHERE project_id = ? AND user_id = ?`,
+  ).get(projectId, normalizedUserId) as DbRow | undefined;
+  if (!roleRow) return null;
+  return {
+    projectId: roleRow.projectId,
+    userId: roleRow.userId,
+    role: normalizeZakiProjectRole(roleRow.role) ?? 'viewer',
+    createdAt: Number(roleRow.createdAt),
+    updatedAt: Number(roleRow.updatedAt),
+  };
+}
+
+export function listZakiProjectRoles(db: SqliteDb, projectId: string) {
+  const roleRows = db.prepare(
+    `SELECT project_id AS projectId,
+            user_id AS userId,
+            role,
+            created_at AS createdAt,
+            updated_at AS updatedAt
+       FROM zaki_project_roles
+      WHERE project_id = ?
+      ORDER BY role ASC, updated_at DESC`,
+  ).all(projectId) as DbRow[];
+  return roleRows.map((roleRow) => ({
+    projectId: roleRow.projectId,
+    userId: roleRow.userId,
+    role: normalizeZakiProjectRole(roleRow.role) ?? 'viewer',
+    createdAt: Number(roleRow.createdAt),
+    updatedAt: Number(roleRow.updatedAt),
+  }));
+}
+
 // ---------- projects ----------
 
 const PROJECT_COLS = `id, name, skill_id AS skillId,
@@ -547,6 +638,15 @@ export function insertProject(db: SqliteDb, p: DbRow) {
     p.createdAt,
     p.updatedAt,
   );
+  const ownerUserId = normalizeZakiProjectUserId(p.metadata?.zakiTenantId);
+  if (ownerUserId) {
+    upsertZakiProjectRole(db, {
+      projectId: p.id,
+      userId: ownerUserId,
+      role: 'owner',
+      now: p.createdAt,
+    });
+  }
   return getProject(db, p.id);
 }
 
