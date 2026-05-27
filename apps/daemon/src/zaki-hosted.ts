@@ -19,6 +19,14 @@ type ZakiRequest = Request & {
 };
 
 const TENANT_ID_RE = /^[A-Za-z0-9._:@-]{1,160}$/;
+const HOSTED_BLOCKED_PATHS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /^\/api\/dialog\//, reason: 'native host dialogs are not available in hosted mode' },
+  { pattern: /^\/api\/import\/folder(?:\/|$)/, reason: 'local folder import is not available in hosted mode' },
+  { pattern: /^\/api\/plugins\/upload-folder(?:\/|$)/, reason: 'local plugin folder upload is not available in hosted mode' },
+  { pattern: /^\/api\/projects\/[^/]+\/working-dir(?:\/|$)/, reason: 'local working directory changes are not available in hosted mode' },
+  { pattern: /^\/api\/projects\/[^/]+\/open-in(?:\/|$)/, reason: 'host application launching is not available in hosted mode' },
+  { pattern: /^\/api\/projects\/[^/]+\/plugins\/install-folder(?:\/|$)/, reason: 'local plugin folder install is not available in hosted mode' },
+];
 
 export function isZakiHostedMode(env: Env = process.env): boolean {
   return (
@@ -155,6 +163,11 @@ function collectRequestProjectIds(req: Request): string[] {
   return [...new Set(ids)];
 }
 
+function hostedBlockedPathReason(pathname: string): string | null {
+  const blocked = HOSTED_BLOCKED_PATHS.find((entry) => entry.pattern.test(pathname));
+  return blocked?.reason || null;
+}
+
 function stampRequestBody(req: Request, tenantId: string): void {
   if (!req.body || typeof req.body !== 'object') return;
   const body = req.body as Record<string, unknown>;
@@ -213,6 +226,13 @@ export function createZakiHostedProjectMiddleware(opts: {
     if (!isZakiHostedMode(env) || isOpenProbePath(req.path)) return next();
     const tenantId = getZakiTenantId(req);
     if (!tenantId) return next();
+
+    const blockedReason = hostedBlockedPathReason(req.path);
+    if (blockedReason) {
+      return res.status(404).json({
+        error: { code: 'NOT_FOUND', message: blockedReason },
+      });
+    }
 
     const runMatch = /^\/api\/runs\/([^/?#]+)/.exec(req.path);
     if (runMatch && opts.getRun) {

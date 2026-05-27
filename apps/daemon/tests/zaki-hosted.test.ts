@@ -170,4 +170,38 @@ describe('zaki hosted mode', () => {
       headers: hostedHeaders('user-a'),
     })).status).toBe(200);
   });
+
+  it('blocks local daemon host-tool endpoints in hosted mode', async () => {
+    const projects = new Map<string, Project>([
+      ['design-1', { id: 'design-1', metadata: { zakiTenantId: 'user-a' } }],
+    ]);
+    const app = express();
+    app.use(express.json());
+    app.use(createZakiHostedAuthMiddleware({
+      env: {
+        ZAKI_DESIGN_RUNTIME_MODE: 'hosted',
+        DESIGN_ENGINE_INTERNAL_TOKEN: 'secret-token',
+      },
+    }));
+    app.use(createZakiHostedProjectMiddleware({
+      env: {
+        ZAKI_DESIGN_RUNTIME_MODE: 'hosted',
+        DESIGN_ENGINE_INTERNAL_TOKEN: 'secret-token',
+      },
+      getProject: (id) => projects.get(id),
+    }));
+    app.post('/api/import/folder', (_req, res) => res.json({ ok: true }));
+    app.post('/api/projects/:id/open-in', (_req, res) => res.json({ ok: true }));
+
+    const server = await listen(app);
+    expect((await fetch(`${server.baseUrl}/api/import/folder`, {
+      method: 'POST',
+      headers: hostedHeaders('user-a'),
+      body: JSON.stringify({ path: '/tmp/project' }),
+    })).status).toBe(404);
+    expect((await fetch(`${server.baseUrl}/api/projects/design-1/open-in`, {
+      method: 'POST',
+      headers: hostedHeaders('user-a'),
+    })).status).toBe(404);
+  });
 });
