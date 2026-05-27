@@ -16,6 +16,10 @@ services:
       OD_PORT: 7456
       OD_WEB_PORT: ${OPEN_DESIGN_PORT:-7456}
       OD_API_TOKEN: ${OD_API_TOKEN:?Please run 'openssl rand -hex 32' to generate one, and set it in your .env file.}
+      ZAKI_DESIGN_RUNTIME_MODE: ${ZAKI_DESIGN_RUNTIME_MODE:-hosted}
+      DESIGN_ENGINE_INTERNAL_AUTH_REQUIRED: ${DESIGN_ENGINE_INTERNAL_AUTH_REQUIRED:-true}
+      DESIGN_ENGINE_INTERNAL_TOKEN: ${DESIGN_ENGINE_INTERNAL_TOKEN:?Please set DESIGN_ENGINE_INTERNAL_TOKEN in your .env file.}
+      ZAKI_TENANT_HEADER: ${ZAKI_TENANT_HEADER:-X-Zaki-User-Id}
     ports:
       - "127.0.0.1:${OPEN_DESIGN_PORT:-7456}:7456"
     volumes:
@@ -33,7 +37,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:7456/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+          "fetch('http://127.0.0.1:7456/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
         ]
       interval: 30s
       timeout: 5s

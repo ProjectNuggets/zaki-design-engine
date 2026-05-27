@@ -401,6 +401,13 @@ import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
+import {
+  createZakiHostedAuthMiddleware,
+  createZakiHostedProjectMiddleware,
+  requestHasZakiInternalToken,
+  resolveZakiInternalToken,
+  zakiDesignReadiness,
+} from './zaki-hosted.js';
 import { configureConnectorCredentialStore, connectorService, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
 import { composioConnectorProvider } from './connectors/composio.js';
 import { configureComposioConfigStore } from './connectors/composio-config.js';
@@ -3496,9 +3503,10 @@ export async function startServer({
   // matching `Authorization: Bearer <token>` header (loopback origins
   // are exempted so the desktop UI keeps working).
   const apiToken = (process.env.OD_API_TOKEN ?? '').trim();
-  if (!isLoopbackHostname(host) && apiToken.length === 0) {
+  const zakiInternalToken = resolveZakiInternalToken(process.env);
+  if (!isLoopbackHostname(host) && apiToken.length === 0 && zakiInternalToken.length === 0) {
     throw new Error(
-      `OD_BIND_HOST=${host} requires OD_API_TOKEN to be set. ` +
+      `OD_BIND_HOST=${host} requires OD_API_TOKEN or ZAKI_INTERNAL_TOKEN to be set. ` +
       `Generate one with \`openssl rand -hex 32\` and re-launch. ` +
       `(Loopback hosts 127.0.0.1 / ::1 / localhost do not need a token.)`,
     );
@@ -3506,6 +3514,7 @@ export async function startServer({
 
   const app = express();
   app.use(express.json({ limit: '4mb' }));
+  app.use(createZakiHostedAuthMiddleware({ env: process.env }));
 
   // Plan §3.K1 — bearer-token middleware.
   //
@@ -3525,7 +3534,9 @@ export async function startServer({
       if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
       const auth = req.get('authorization') ?? '';
       const match = /^Bearer\s+(\S+)\s*$/i.exec(auth);
-      if (!match || match[1] !== apiToken) {
+      const hasOpenDesignToken = Boolean(match && match[1] === apiToken);
+      const hasZakiInternalToken = requestHasZakiInternalToken(req, zakiInternalToken);
+      if (!hasOpenDesignToken && !hasZakiInternalToken) {
         return res.status(401).json({
           error: { code: 'API_TOKEN_REQUIRED', message: 'Authorization: Bearer <OD_API_TOKEN> required' },
         });
@@ -3996,6 +4007,25 @@ export async function startServer({
   app.get('/api/health', async (_req, res) => {
     const versionInfo = await readCurrentAppVersionInfo();
     res.json({ ok: true, version: versionInfo.version });
+  });
+
+  app.get('/healthz', async (_req, res) => {
+    const versionInfo = await readCurrentAppVersionInfo();
+    res.json({ ok: true, service: 'zaki-design-engine', version: versionInfo.version });
+  });
+
+  app.get('/livez', (_req, res) => {
+    res.json({ ok: true, service: 'zaki-design-engine', shuttingDown: daemonShuttingDown });
+  });
+
+  app.get('/readyz', (_req, res) => {
+    const readiness = zakiDesignReadiness({
+      env: process.env,
+      dataDir: RUNTIME_DATA_DIR,
+      projectsDir: PROJECTS_DIR,
+      dbCheck: () => { db.prepare('SELECT 1').get(); },
+    });
+    res.status(readiness.ok ? 200 : 503).json(readiness);
   });
 
   app.get('/api/version', async (_req, res) => {
@@ -4833,6 +4863,11 @@ export async function startServer({
     getAppVersion: () => cachedAppVersion?.version ?? '0.0.0',
     readAnalyticsContext,
   };
+  app.use(createZakiHostedProjectMiddleware({
+    env: process.env,
+    getProject: (id) => getProject(db, id),
+    getRun: (id) => design.runs.get(id),
+  }));
 
   // PostHog runtime config.
   //

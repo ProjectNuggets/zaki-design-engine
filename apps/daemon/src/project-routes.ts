@@ -18,6 +18,14 @@ import { connectorService } from './connectors/service.js';
 import type { RouteDeps } from './server-context.js';
 import { listSkills } from './skills.js';
 import { auditDesignSystemPackage } from './tools-connectors-cli.js';
+import {
+  filterProjectsForZakiTenant,
+  filterTemplatesForZakiTenant,
+  getZakiTenantId,
+  isZakiHostedRequest,
+  stampZakiTenantMetadata,
+  templateBelongsToZakiTenant,
+} from './zaki-hosted.js';
 
 export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'validation'> {}
 
@@ -82,7 +90,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     return Array.from(byTaskKind.values());
   }
 
-  app.get('/api/projects', (_req, res) => {
+  app.get('/api/projects', (req, res) => {
     try {
       const latestRunStatuses = listLatestProjectRunStatuses(db);
       const awaitingInputProjects = listProjectsAwaitingInput(db);
@@ -104,7 +112,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       /** @type {import('@open-design/contracts').ProjectsResponse} */
       const body = {
-        projects: listProjects(db).map((project: any) => ({
+        projects: filterProjectsForZakiTenant(req, listProjects(db)).map((project: any) => ({
           ...project,
           status: composeProjectDisplayStatus(
             activeRunStatuses.get(project.id) ??
@@ -181,7 +189,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         );
       }
       const normalizedDesignSystemId = designSystemValidation.id;
-      const projectMetadata =
+      let projectMetadata =
         metadata && typeof metadata === 'object'
           ? {
               ...metadata,
@@ -196,6 +204,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           : skipDiscoveryBrief === true
             ? { skipDiscoveryBrief: true }
             : null;
+      projectMetadata = stampZakiTenantMetadata(req, projectMetadata);
       const now = Date.now();
       const project = insertProject(db, {
         id,
@@ -652,13 +661,16 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   // starting point. Created via the project's Share menu (snapshots
   // every .html file in the project folder at the moment of save).
 
-  app.get('/api/templates', (_req, res) => {
-    res.json({ templates: listTemplates(db) });
+  app.get('/api/templates', (req, res) => {
+    res.json({ templates: filterTemplatesForZakiTenant(req, listTemplates(db), (id) => getProject(db, id)) });
   });
 
   app.get('/api/templates/:id', (req, res) => {
     const t = getTemplate(db, req.params.id);
     if (!t) return res.status(404).json({ error: 'not found' });
+    if (isZakiHostedRequest(req) && !templateBelongsToZakiTenant(t, getZakiTenantId(req), (id) => getProject(db, id))) {
+      return res.status(404).json({ error: 'not found' });
+    }
     res.json({ template: t });
   });
 
@@ -676,6 +688,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       const sourceProject = getProject(db, sourceProjectId);
       if (!sourceProject) {
+        return res.status(404).json({ error: 'source project not found' });
+      }
+      if (isZakiHostedRequest(req) && !templateBelongsToZakiTenant({ sourceProjectId }, getZakiTenantId(req), (id) => getProject(db, id))) {
         return res.status(404).json({ error: 'source project not found' });
       }
       // Snapshot every HTML / sketch / text file in the source project.
@@ -727,6 +742,10 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   });
 
   app.delete('/api/templates/:id', (req, res) => {
+    const t = getTemplate(db, req.params.id);
+    if (isZakiHostedRequest(req) && !templateBelongsToZakiTenant(t, getZakiTenantId(req), (id) => getProject(db, id))) {
+      return res.status(404).json({ error: 'not found' });
+    }
     deleteTemplate(db, req.params.id);
     res.json({ ok: true });
   });
