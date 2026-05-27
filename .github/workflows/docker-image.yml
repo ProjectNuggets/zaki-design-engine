@@ -1,13 +1,18 @@
 name: Docker image
 
-# Phase 5 / spec §15.5 — multi-arch image builds.
+# ZAKI downstream image build for the hosted design engine.
 #
 # Pushes to ghcr.io on:
-#   - tag (v*.*.*)    → ghcr.io/<owner>/od:<tag> + :latest
+#   - main / hosted branch -> ghcr.io/projectnuggets/zaki-design-engine:edge + :sha-<short>
+#   - tag (v*.*.*)        -> ghcr.io/projectnuggets/zaki-design-engine:<tag> + :latest
 
 on:
   push:
+    branches:
+      - main
+      - codex/zaki-design-engine-hosted
     tags: ['v*.*.*']
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -40,7 +45,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/od
+          images: ghcr.io/projectnuggets/zaki-design-engine
           # spec §15.1 tag scheme:
           #   - main           → :edge + :sha-<short>
           #   - vX.Y.Z         → :X.Y.Z + :latest
