@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import fs from 'node:fs';
+import path from 'node:path';
 
 export const ZAKI_TENANT_METADATA_KEY = 'zakiTenantId';
 
@@ -11,6 +12,11 @@ type ProjectRecord = {
 
 type RunRecord = {
   projectId?: string | null;
+} | null | undefined;
+
+type StorageProjectRecord = {
+  id?: string;
+  metadata?: Record<string, unknown> | null;
 } | null | undefined;
 
 type ZakiRequest = Request & {
@@ -166,6 +172,66 @@ function collectRequestProjectIds(req: Request): string[] {
 function hostedBlockedPathReason(pathname: string): string | null {
   const blocked = HOSTED_BLOCKED_PATHS.find((entry) => entry.pattern.test(pathname));
   return blocked?.reason || null;
+}
+
+async function directorySizeBytes(root: string): Promise<number> {
+  let total = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return 0;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      total += await directorySizeBytes(fullPath);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    try {
+      const stat = await fs.promises.stat(fullPath);
+      total += stat.size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+    }
+  }
+  return total;
+}
+
+export async function calculateZakiTenantStorageUsage(opts: {
+  tenantId: string | null;
+  projects: StorageProjectRecord[];
+  projectsRoot: string;
+  projectDir: (projectsRoot: string, projectId: string) => string;
+}) {
+  const tenantId = normalizeZakiTenantId(opts.tenantId);
+  if (!tenantId) {
+    return {
+      ok: false,
+      totalBytes: 0,
+      projectCount: 0,
+      projects: [] as Array<{ id: string; bytes: number }>,
+    };
+  }
+
+  const usageProjects: Array<{ id: string; bytes: number }> = [];
+  for (const project of opts.projects) {
+    if (!project?.id || !projectBelongsToZakiTenant(project, tenantId)) continue;
+    const projectPath = opts.projectDir(opts.projectsRoot, project.id);
+    const bytes = await directorySizeBytes(projectPath);
+    usageProjects.push({ id: project.id, bytes });
+  }
+
+  return {
+    ok: true,
+    totalBytes: usageProjects.reduce((sum, item) => sum + item.bytes, 0),
+    projectCount: usageProjects.length,
+    projects: usageProjects,
+  };
 }
 
 function stampRequestBody(req: Request, tenantId: string): void {

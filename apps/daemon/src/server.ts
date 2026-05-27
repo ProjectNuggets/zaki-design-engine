@@ -402,8 +402,10 @@ import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import {
+  calculateZakiTenantStorageUsage,
   createZakiHostedAuthMiddleware,
   createZakiHostedProjectMiddleware,
+  getZakiTenantId,
   requestHasZakiInternalToken,
   resolveZakiInternalToken,
   zakiDesignReadiness,
@@ -4868,6 +4870,35 @@ export async function startServer({
     getProject: (id) => getProject(db, id),
     getRun: (id) => design.runs.get(id),
   }));
+
+  app.get('/api/zaki/storage-usage', async (req, res) => {
+    const tenantId = getZakiTenantId(req);
+    if (!tenantId) {
+      return res.status(400).json({
+        error: { code: 'ZAKI_TENANT_REQUIRED', message: 'tenant header required' },
+      });
+    }
+    try {
+      const usage = await calculateZakiTenantStorageUsage({
+        tenantId,
+        projects: listProjects(db),
+        projectsRoot: PROJECTS_DIR,
+        projectDir,
+      });
+      res.json({
+        ...usage,
+        tenantId,
+      });
+    } catch (error) {
+      res.status(503).json({
+        ok: false,
+        error: {
+          code: 'STORAGE_USAGE_UNAVAILABLE',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  });
 
   // PostHog runtime config.
   //

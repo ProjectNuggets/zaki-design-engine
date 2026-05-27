@@ -1,8 +1,12 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  calculateZakiTenantStorageUsage,
   createZakiHostedAuthMiddleware,
   createZakiHostedProjectMiddleware,
   filterProjectsForZakiTenant,
@@ -203,5 +207,35 @@ describe('zaki hosted mode', () => {
       method: 'POST',
       headers: hostedHeaders('user-a'),
     })).status).toBe(404);
+  });
+
+  it('calculates storage usage only for the current ZAKI tenant', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'zaki-design-storage-'));
+    try {
+      await fs.mkdir(path.join(root, 'design-a'), { recursive: true });
+      await fs.mkdir(path.join(root, 'design-b'), { recursive: true });
+      await fs.writeFile(path.join(root, 'design-a', 'index.html'), 'a'.repeat(17));
+      await fs.writeFile(path.join(root, 'design-b', 'index.html'), 'b'.repeat(29));
+      await fs.symlink('/etc/passwd', path.join(root, 'design-a', 'ignored-link'));
+
+      const usage = await calculateZakiTenantStorageUsage({
+        tenantId: 'user-a',
+        projects: [
+          { id: 'design-a', metadata: { zakiTenantId: 'user-a' } },
+          { id: 'design-b', metadata: { zakiTenantId: 'user-b' } },
+        ],
+        projectsRoot: root,
+        projectDir: (projectsRoot, projectId) => path.join(projectsRoot, projectId),
+      });
+
+      expect(usage).toMatchObject({
+        ok: true,
+        totalBytes: 17,
+        projectCount: 1,
+        projects: [{ id: 'design-a', bytes: 17 }],
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
